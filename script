@@ -1,0 +1,233 @@
+import arcpy
+import os
+import shutil
+from arcpy import env
+
+class Toolbox(object):
+    def __init__(self):
+        """Define the toolbox (the name of the toolbox is the name of the
+        .pyt file)."""
+        self.label = "Lab5 Toolbox for GEOG 592"
+        self.alias = ""
+
+        """ List of tool classes associated with this toolbox """
+        self.tools = [BasetoTargetLocationsForFC]
+        """This is important, this is how ArcGIS constructs the interface"""
+
+class BasetoTargetLocationsForFC(object):
+    def __init__(self):
+        """Define the toolbox (the name of the toolbox is the name of the
+        .pyt file)."""
+        self.label = "Base to Target Locations For FC"
+        self.description = "This tool will allow the user to input a feature class, make a few specifications, and output a feature class with geodesic polylines connecting all locations within the feature class."
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        """Define parameter/objects definitions"""
+
+        workSpaceName = arcpy.Parameter(displayName = "Path to workspace environment for geoprocessing: ",
+                                      name = "workSpaceName", datatype = "DEWorkspace",
+                                      parameterType = "Required",
+                                      direction = "Input")
+
+        FDSetName = arcpy.Parameter(displayName = "Path to feature dataset where input feature class is located: ", 
+                                        name = "FDSetName",datatype = "DEFeatureDataset",
+                                        parameterType = "Required",
+                                        direction = "Input")
+        
+        inputFC = arcpy.Parameter(displayName = "Path to input feature class file : ",
+                                name = "inFC", datatype = "DEFeatureClass", 
+                                parameterType = "Required", 
+                                direction = "Input")
+        
+        project_coords = arcpy.Parameter(displayName = "Projected Coordinate System for output feature class: ",
+                                name = "projected_coordinate_system",
+                                datatype = "GPCoordinateSystem",
+                                parameterType = "Required",
+                                direction = "Input")
+        
+        placeNameField= arcpy.Parameter(displayName = "Exact name corresponding to the place-name field: ",
+                                        name = "fieldColumn", 
+                                        datatype = "Field", 
+                                        parameterType = "Required", 
+                                        direction = "Input")
+
+        mainPoint= arcpy.Parameter(displayName = "Place-name of base location: ", 
+                                        name = "mainPoint",datatype = "GPString",
+                                        parameterType = "Required",
+                                        direction = "Input")
+
+        bufferDistances = arcpy.Parameter(displayName = "Multiple Ring Buffer distances in kilometers: ",
+                                        name = "bufferDistances",
+                                        datatype = "GPString",
+                                        parameterType = "Required",
+                                        direction = "Input")
+
+        search = arcpy.Parameter(displayName = "Search radius (Km)",
+					name = "searchRadius", datatype = "GPString", parameterType = "Required",
+					direction = "Input")      
+          
+        params = [workSpaceName,FDSetName,inputFC,project_coords,placeNameField,mainPoint,bufferDistances, search]
+                                 
+        return params
+
+    def isLicensed(self):
+        """Set whether tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter.  This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        arcpy.env.overwriteOutput = True
+        """The source code of the tool """
+        """ Define local variables """
+        """ Constructing relative file paths """
+
+        arcpy.env.workspace = workSpaceName = parameters[0].valueAsText
+        FDSetName = parameters[1].valueAsText
+        arcpy.AddMessage("The path of your feature dataset is: " + FDSetName+"\n")
+
+        inputFC = parameters[2].valueAsText
+        inputFCname = os.path.basename(inputFC).rstrip(os.path.splitext(inputFC)[1])
+	projectedFCname = "projectedFC_" +inputFCname
+        projectedFC = os.path.join(workSpaceName,projectedFCname)        
+        arcpy.AddMessage("The path of projected feature class is: " + projectedFC + "\n")
+
+        """ Identify the geographic coordinate system on input feature class """
+        spatial_RefOfInput = arcpy.Describe(inputFC).spatialReference
+        arcpy.AddMessage("{0} : {1}".format(inputFC, spatial_RefOfInput.name)+"\n")
+
+        """ Project your input Feature Class"""
+        project_coords = parameters[3].value
+        arcpy.AddMessage("Projecting the input feature class to projected feature class... \n")
+        arcpy.Project_management(inputFC, projectedFC, project_coords)
+        
+        """ Make Feature Layers for projectedFC """
+        """ Name name and relative path of our output as a function of our input """
+        projectedLyrName = "projectedLyr_"+inputFCname
+        projectedLyr = os.path.join(workSpaceName,projectedLyrName)
+        """ MakeFeatureLayer_management (in_features, out_layer, {where_clause}, {workspace}, {field_info}) """
+        arcpy.AddMessage("Making a feature layer from: " + projectedFC)
+        arcpy.MakeFeatureLayer_management(projectedFC, projectedLyr)
+        
+        """ Make Feature Layers for All Points """
+        placeNameField = parameters[4].valueAsText
+        mainPoint = parameters[5].valueAsText
+        mainPointLyrName = "mainPointLyr"
+        mainPointLyr = os.path.join(workSpaceName,mainPointLyrName)
+        
+        """ Create an expression with proper delimiter """
+        """ AddFieldDelimiters will return a field name with the proper field delimiters for the workspace specified """
+        whereClause = "{0} = '{1}'".format(arcpy.AddFieldDelimiters(projectedLyr, placeNameField), mainPoint)  
+        arcpy.Select_analysis(projectedLyr,mainPointLyr,whereClause)
+        arcpy.AddMessage("Selection by selected target location: " + mainPoint+" is complete. \n")
+       
+        """ Select Layer by Location """                                     
+        """ Multi-Ring Buffer Main Point """
+        bufferDistances = parameters[6].value
+        mainPointMultiRingBuffLyrName = "mainPointBuffer"
+        mainPointMultiRingBuffLyr = os.path.join(workSpaceName,mainPointMultiRingBuffLyrName)
+        arcpy.AddMessage("Buffering distances from: " + mainPoint+"\n")
+        arcpy.MultipleRingBuffer_analysis(mainPointLyr, mainPointMultiRingBuffLyr,bufferDistances, "Kilometers", "Distance (Km)","ALL", "FULL")  
+
+        """ We're creating two feature classes from the selection in order to perform the generate near table """
+        copy1LocsInBuffDistsName = "copy1LocsInBuff_" + inputFCname
+        copy1LocsInBuffDists = os.path.join(workSpaceName,copy1LocsInBuffDistsName)
+        copy2LocsInBuffDistsName = "copy2LocsInBuff_" + inputFCname
+        copy2LocsInBuffDists = os.path.join(workSpaceName,copy2LocsInBuffDistsName)
+        arcpy.AddMessage("Selecting locations within the: " +  mainPointMultiRingBuffLyr +"\n")
+        arcpy.SelectLayerByLocation_management(projectedLyr, "COMPLETELY_WITHIN", mainPointMultiRingBuffLyr,"","NEW_SELECTION","NOT_INVERT")
+
+        """ Copy Selection of Selected Attributes in Layer to convert to Feature Class """
+        arcpy.CopyFeatures_management(projectedLyr,copy1LocsInBuffDists, "","0","0","0")
+        arcpy.CopyFeatures_management(projectedLyr,copy2LocsInBuffDists, "","0","0","0")
+        arcpy.AddMessage("Copying locations within buffer distance... \n")
+
+        """ Solve for N for Generate Near Table """
+        result = arcpy.GetCount_management(copy1LocsInBuffDists)
+        count = int(result.getOutput(0))
+        arcpy.AddMessage("The number of polylines will be based on total rows in input table: " + str(count)+".\n")
+
+        """ Generate Near Table """
+        GenNearTabName = "GenNearTab"
+        GenNearTab = os.path.join(workSpaceName,GenNearTabName)
+        arcpy.AddMessage("Generating the near table for all point locations... \n")
+        """ search_radius is the maximum distance that you want ArcPy to search for possible near locations """
+	      search = parameters[7].value
+        location = "LOCATION"
+        angle = "ANGLE"
+        closest = "ALL"
+        method = "GEODESIC"
+        arcpy.GenerateNearTable_analysis(copy2LocsInBuffDists,copy1LocsInBuffDists,GenNearTab, search+"Kilometers",location,angle,closest,count,method)
+
+        """ Join copy2LocsInBuffDists to the GenNearTab """
+        """ JoinField_management (in_data, in_field, join_table, join_field, {fields}) """
+        Join1name = "Join1_"+copy2LocsInBuffDistsName
+        Join1 = os.path.join(workSpaceName,Join1name)
+        Join1 = arcpy.JoinField_management(GenNearTab, "IN_FID",copy2LocsInBuffDists, "OBJECTID","Name")
+        arcpy.AddMessage("Joining the generated near table to the second copy of the locations within the specified range... \n")
+        """ Join copy1LocsInBuffDists to the GenNearTab """
+        Join2name = "Join2_" + copy1LocsInBuffDistsName
+        Join2 = os.path.join(workSpaceName,Join2name)
+        Join2 = arcpy.JoinField_management(Join1, "NEAR_FID",copy1LocsInBuffDists, "OBJECTID", "Name")
+        arcpy.AddMessage("Joining the joined copy of the locations within the specified " + search_radius + " to the first copy... \n")
+
+        """ Delete identical polylines """
+        arcpy.DeleteIdentical_management(Join2, "NEAR_DIST", "", "0")
+        arcpy.AddMessage("Deleting duplicate polylines... \n")
+         
+        """ Run XY to Lines """
+	      """ XYToLine_management (in_table, out_featureclass, startx_field, starty_field, endx_field, endy_field, {line_type},{id_field}, {spatial_reference}) """
+        GenNearTab_XYToLinename =  "XYToLinesFromAllLocs" 
+        GenNearTab_XYToLine = os.path.join(workSpaceName,GenNearTab_XYToLinename)
+        startx_field = "FROM_X"
+        starty_field = "FROM_Y"
+        endx_field = "NEAR_X"
+        endy_field = "NEAR_Y"
+        line_type = "GEODESIC"
+        id_field = "Name"
+        arcpy.XYToLine_management(Join2, GenNearTab_XYToLine, startx_field, starty_field, endx_field, endy_field, line_type, id_field)
+        arcpy.AddMessage("Running the XY to Line tool to create polylines after running the delete identical tool... \n")
+
+        """ Re-projecting the XYtoLine data """
+        arcpy.AddMessage("Re-projecting the input feature class to projected feature class... \n")
+        projectedXYToLinename = "projectedXYToLine"
+        projectedXYToLine = os.path.join(workSpaceName,projectedXYToLinename)
+        arcpy.Project_management(GenNearTab_XYToLine, projectedXYToLine, project_coords)
+
+        """ Add Geometry Attributes """
+        arcpy.AddGeometryAttributes_management(projectedXYToLine, "LENGTH_GEODESIC", "KILOMETERS","","")
+        arcpy.AddMessage("Adding geometry attributes to " + projectedXYToLine)
+
+        """ Select only polylines from the base-location for display """
+        XYlinesFromBasename  = "projectedXYlinesFromMainPoint"
+        projectedXYToLineXYlinesFromBase = os.path.join(workSpaceName,XYlinesFromBasename)
+        whereClause = "{0} = '{1}'".format(arcpy.AddFieldDelimiters(projectedXYToLine, placeNameField), mainPoint)  
+        arcpy.Select_analysis(projectedXYToLine,projectedXYToLineXYlinesFromBase,whereClause)
+
+        """ del copy2LocsInBuffDistsName copy1LocsInBuffDistsName mainPointLyr GenNearTab mainPointLyr
+
+        """ Create Map Document
+        mxd = arcpy.mapping.MapDocument(projectedXYToLineXYlinesFromBase.mxd)
+        mxd.author = "Patrick F. Welsh"
+        mxd.title = "Demonstration of BaseToTargetLocs Python Script"
+        mxd.saveACopy(workSpaceName) 
+        mxd.save()
+
+        df = mxd.activeDataFrame
+        layer1 = arcpy.mapping.Layer(XYlinesFromBase)
+        arcpy.mapping.AddLayer(df, layer1, "TOP") 
+        layer2 = arcpy.maping.Layer(mainPointBuffer)
+        arcpy.mapping.AddLayer(df,layer2,"BOTTOM") """
+
+
+       	return
