@@ -9,5 +9,6 @@ Required user input parameters include:
 * Name corresponding to the field name in the Feature Class
 * Exact name of the base-location in the Feature Class
 * Desired buffer distances
+* Search radius
 
 The script performs faster with fewer points, however, this script may be used with any feature class of points.
